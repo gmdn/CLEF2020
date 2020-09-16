@@ -1,0 +1,1468 @@
+---
+title: "Reproducible experiments for CLEF 2020 eHealth Task 1"
+author: "Giorgio Maria Di Nunzio"
+date: "08/30/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# CLEF 2020 eHealth Task 1 - ICD10 Classification task
+
+This code was used by the author in the paper *As Simple as Possible: Using the R Tidyverse for Multilingual Information Extraction.IMS Unipd at CLEF eHealth 2020 Task 1* in the CLEF 2020 eHealth Task 1.
+
+### Library used
+
+```{r libraries, echo=FALSE}
+
+library(readtext)
+library(tibble)
+library(dplyr)
+library(stringr)
+library(readr)
+library(tictoc)
+library(udpipe)
+library(SnowballC)
+library(text2vec)
+
+```
+
+
+## Read the dataset
+
+The dataset we use in this code is the one provided in the [fourth version](http://doi.org/10.5281/zenodo.3837305) by the organizers of the task.
+
+### Read text files
+
+In the first part, we are going to read the training, developmentm and test files into tibbles.
+
+```{r read_dataset, echo=FALSE}
+
+# path to training-development-test files
+path_name <- "./dataset/final_dataset_v4_to_publish/train/text_files/"
+
+# list files
+file_names <- list.files(path_name)
+
+# read all files into a tibble and remove file extension from name
+dataset_train <- readtext(paste0(path_name, "/", file_names)) %>%
+  as_tibble() %>%
+  mutate(doc_id = str_remove(doc_id, "\\.txt"))
+
+# path to training-development-test files
+path_name <- "./dataset/final_dataset_v4_to_publish/dev/text_files/"
+
+# list files
+file_names <- list.files(path_name)
+
+# read all files into a tibble and remove file extension from name
+dataset_dev <- readtext(paste0(path_name, "/", file_names)) %>%
+  as_tibble() %>%
+  mutate(doc_id = str_remove(doc_id, "\\.txt"))
+
+# path to training-development-test files
+path_name <- "./dataset/final_dataset_v4_to_publish/test/text_files/"
+
+# list files
+file_names <- list.files(path_name)
+
+# read all files into a tibble and remove file extension from name
+dataset_test <- readtext(paste0(path_name, "/", file_names)) %>%
+  as_tibble() %>%
+  mutate(doc_id = str_remove(doc_id, "\\.txt"))
+
+```
+
+### Parse text with UDPipe
+
+This year, instead of using the tidytext package, we tested the UDpipe R package in order to process the text data and split into tokens.
+
+```{r annotate_text, echo=FALSE}
+
+# download language model for dependency parsing
+# Spanish
+dl <- udpipe_download_model(language = "spanish", model_dir = "ud_data/")
+#saveRDS(dl, "ud_data/ud_model_es.rds")
+
+# English (in case one wants to use the English dataset)
+#dl <- udpipe_download_model(language = "english", model_dir = "ud_data/")
+#saveRDS(dl, "ud_data/ud_model_en.rds")
+
+# read model (if you have previously saved it)
+# dl <- readRDS("ud_data/ud_model_es.rds")
+
+# load model
+udmodel_spanish <- udpipe_load_model(file = dl$file_model)
+
+# pos tagging and dependency parsing
+annotated_train <- as_tibble(udpipe_annotate(object = udmodel_spanish, 
+                                             x = dataset_train$text, 
+                                             doc_id = dataset_train$doc_id))
+
+# replace NA values for lemmas
+# stem tokens
+# lower tokens, lemmas and stem
+annotated_train <- annotated_train %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>%
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+annotated_train$set <- "train"
+
+saveRDS(annotated_train, "annotated_data/annotated_train.rds")
+
+# build one line documents (group previously split data)
+#annotated_train <- readRDS("annotated_data/annotated_train.rds")
+one_line_docs_train <- annotated_train %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(only_token = str_squish(str_remove_all(one_line_token, "[:punct:]"))) %>%
+  mutate(only_lemma = str_squish(str_remove_all(one_line_lemma, "[:punct:]"))) %>%
+  mutate(only_stem = str_squish(str_remove_all(one_line_stem, "[:punct:]")))
+
+saveRDS(one_line_docs_train, "raw_data/one_line_docs_train.rds")
+
+# pos tagging and dependency parsing
+annotated_dev <- as_tibble(udpipe_annotate(object = udmodel_spanish, 
+                                           x = dataset_dev$text, 
+                                           doc_id = dataset_dev$doc_id))
+
+# replace NA values for lemmas
+# stem tokens
+# lower tokens, lemmas and stem
+annotated_dev <- annotated_dev %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>%
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+annotated_dev$set <- "dev"
+
+saveRDS(annotated_dev, "annotated_data/annotated_dev.rds")
+
+# build one line documents
+#annotated_dev <- readRDS("annotated_data/annotated_dev.rds")
+one_line_docs_dev <- annotated_dev %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(only_token = str_squish(str_remove_all(one_line_token, "[:punct:]"))) %>%
+  mutate(only_lemma = str_squish(str_remove_all(one_line_lemma, "[:punct:]"))) %>%
+  mutate(only_stem = str_squish(str_remove_all(one_line_stem, "[:punct:]")))
+
+saveRDS(one_line_docs_dev, "raw_data/one_line_docs_dev.rds")
+
+# pos tagging and dependency parsing
+annotated_test <- as_tibble(udpipe_annotate(object = udmodel_spanish, 
+                                            x = dataset_test$text, 
+                                            doc_id = dataset_test$doc_id))
+
+# replace NA values for lemmas
+# stem tokens
+# lower tokens, lemmas and stem
+annotated_test <- annotated_test %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>%
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+annotated_test$set <- "test"
+
+saveRDS(annotated_test, "./annotated_data/annotated_test.rds")
+
+# build one line documents
+#annotated_test <- readRDS("annotated_data/annotated_test.rds")
+one_line_docs_test <- annotated_test %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(only_token = str_squish(str_remove_all(one_line_token, "[:punct:]"))) %>%
+  mutate(only_lemma = str_squish(str_remove_all(one_line_lemma, "[:punct:]"))) %>%
+  mutate(only_stem = str_squish(str_remove_all(one_line_stem, "[:punct:]")))
+
+saveRDS(one_line_docs_test, "raw_data/one_line_docs_test.rds")
+
+# read codiesp disease files
+codiesp_D <- read_tsv(file = "../dataset/codiesp_codes/codiesp-D_codes.tsv",
+                            col_names = FALSE)
+head(codiesp_D)
+names(codiesp_D) <- c("code", "spanish", "english")
+
+# pos tagging and dependency parsing
+annotated_codiesp_D <- as_tibble(udpipe_annotate(object = udmodel_spanish, 
+                                                 x = codiesp_D$spanish, 
+                                                 doc_id = codiesp_D$code)) %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>% 
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+saveRDS(annotated_codiesp_D, "annotated_data/annotated_codiesp_D.RDS")
+
+# build one line documents
+one_line_codiesp_D <- annotated_codiesp_D %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(only_token = str_squish(str_remove_all(one_line_token, "[:punct:]"))) %>%
+  mutate(only_lemma = str_squish(str_remove_all(one_line_lemma, "[:punct:]"))) %>%
+  mutate(only_stem = str_squish(str_remove_all(one_line_stem, "[:punct:]")))
+
+one_line_codiesp_D$only_token <- str_replace(string = one_line_codiesp_D$only_token,
+            pattern = " \\[ | \\]  ",
+            replacement = " ")
+
+saveRDS(one_line_codiesp_D, "raw_data/one_line_codiesp_D_codes.RDS")
+
+# read codiesp procedure files
+codiesp_P <- read_tsv(file = "../dataset/codiesp_codes/codiesp-P_codes.tsv",
+                            col_names = FALSE)
+head(codiesp_P)
+names(codiesp_P) <- c("code", "spanish", "english")
+
+# pos tagging and dependency parsing
+annotated_codiesp_P <- as_tibble(udpipe_annotate(object = udmodel_spanish, 
+                                                 x = codiesp_P$spanish, 
+                                                 doc_id = codiesp_P$code)) %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>% 
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+saveRDS(annotated_codiesp_P, "annotated_data/annotated_codiesp_P.RDS")
+
+# build one line documents
+one_line_codiesp_P <- annotated_codiesp_P %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(only_token = str_squish(str_remove_all(one_line_token, "[:punct:]"))) %>%
+  mutate(only_lemma = str_squish(str_remove_all(one_line_lemma, "[:punct:]"))) %>%
+  mutate(only_stem = str_squish(str_remove_all(one_line_stem, "[:punct:]")))
+
+one_line_codiesp_P <- one_line_codiesp_P %>%
+  filter(only_token != "na")
+
+one_line_codiesp_P$only_token <- str_replace(string = one_line_codiesp_P$only_token,
+                                             pattern = " \\[ | \\]  ",
+                                             replacement = " ")
+
+saveRDS(one_line_codiesp_P, "raw_data/one_line_codiesp_P_codes.RDS")
+
+
+# read labeled dataset
+train_x <- read_tsv(file = "./dataset/final_dataset_v4_to_publish/train/trainX.tsv",
+                    col_names = FALSE)
+head(train_x)
+names(train_x) <- c("doc_id", "class", "class_id", "text", "start_end_chars")
+
+train_x$set <- "train"
+
+train_x <- train_x %>%
+  mutate(text_lower = tolower(text))
+
+dev_x <- read_tsv(file = "./dataset/final_dataset_v4_to_publish/dev/devX.tsv",
+                  col_names = FALSE)
+head(dev_x)
+names(dev_x) <- c("doc_id", "class", "class_id", "text", "start_end_chars")
+
+dev_x$set <- "dev"
+
+dev_x <- dev_x %>%
+  mutate(text_lower = tolower(text))
+
+# build single dataframe
+data_x <- train_x %>%
+  bind_rows(dev_x) %>%
+  mutate(doc_id_x = row_number())
+
+# pos tagging and dependency parsing
+annotated_data_x <- as_tibble(udpipe_annotate(object = udmodel_spanish,
+                                             x = data_x$text, 
+                                             doc_id = data_x$doc_id_x)) %>%
+  mutate(lemma = replace(lemma, is.na(lemma), token[is.na(lemma)])) %>% 
+  mutate(stem = wordStem(token, language = "spanish")) %>%
+  mutate(token_lower = tolower(token)) %>%
+  mutate(lemma_lower = tolower(lemma)) %>%
+  mutate(stem_lower = tolower(stem))
+
+saveRDS(annotated_data_x, "annotated_data/annotated_data_x.RDS")
+
+# build one line documents
+one_line_data_x <- annotated_data_x %>%
+  group_by(doc_id) %>%
+  summarise(one_line_token = str_c(token_lower, sep = "", collapse = " "),
+            one_line_lemma = str_c(lemma_lower, sep = "", collapse = " "),
+            one_line_stem = str_c(stem_lower, sep = "", collapse = " ")) %>%
+  mutate(doc_id = as.integer(doc_id)) %>%
+  inner_join(data_x[, c("doc_id_x", "class", "class_id")], by = c("doc_id" = "doc_id_x"))
+
+saveRDS(one_line_data_x, "raw_data/one_line_data_x.rds")
+
+
+```
+
+
+### Compute TfIdf Matrix
+
+Use text2vec to transform the dataset and use tf-df
+
+```{r tfidf_token, echo=FALSE}
+
+#one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+#one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+#one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+#one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+#one_line_codiesp_D <- readRDS("raw_data/one_line_codiesp_D_codes.RDS")
+#one_line_codiesp_P <- readRDS("raw_data/one_line_codiesp_P_codes.RDS")
+
+###############
+# token
+###############
+
+# "tokenize" the tokens of the test set
+test_only_token <- one_line_docs_test$only_token
+it1 <- itoken(test_only_token, progressbar = FALSE)
+length(test_only_token)
+
+## 1)
+# of the training and development set
+labels_only_token <- one_line_data_x$one_line_token
+it2 <- itoken(labels_only_token, progressbar = FALSE)
+length(labels_only_token)
+
+# join the list of tokens
+doc_set_only_token <- c(test_only_token, labels_only_token)
+length(doc_set_only_token)
+
+# define common vector space
+it <- itoken(doc_set_only_token, progressbar = FALSE)
+
+# select small set of stop words (other words will be filtered in the next steps)
+stop_words <- c("de", "en", "la", "a", "y", "se", "por", "el", "una", "un", "los", "del", "que", "al", "las", "fue", "su", "e", "lo")
+
+# build vocabulary of terms
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_only_token <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_token)
+
+## 2)
+# tfidf with codiespD
+labels_codiesp_D_only_token <- one_line_codiesp_D$only_token
+it2 <- itoken(labels_codiesp_D_only_token, progressbar = FALSE)
+length(labels_codiesp_D_only_token)
+
+doc_set_only_token <- c(test_only_token, labels_codiesp_D_only_token)
+length(doc_set_only_token)
+
+# define common vector space
+it <- itoken(doc_set_only_token, progressbar = FALSE)
+
+# create vocabulary
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+
+# vectorize vocabulary
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_codiesp_D_only_token <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_codiesp_D_only_token)
+
+## 3)
+# tfidf codiesp P 
+labels_codiesp_P_only_token <- one_line_codiesp_P$only_token
+it2 <- itoken(labels_codiesp_P_only_token, progressbar = FALSE)
+length(labels_codiesp_P_only_token)
+
+doc_set_only_token <- c(test_only_token, labels_codiesp_P_only_token)
+length(doc_set_only_token)
+
+# define common vector space
+it <- itoken(doc_set_only_token, progressbar = FALSE)
+
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+tfidf_codiesp_P_only_token <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_token)
+
+```
+
+```{r tfidf_lemma, echo=FALSE}
+
+#one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+#one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+#one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+#one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+#one_line_codiesp_D <- readRDS("raw_data/one_line_codiesp_D_codes.RDS")
+#one_line_codiesp_P <- readRDS("raw_data/one_line_codiesp_P_codes.RDS")
+
+###############
+# lemma
+###############
+
+# "lemmaize" the lemmas of the test set
+test_only_lemma <- one_line_docs_test$only_lemma
+it1 <- itoken(test_only_lemma, progressbar = FALSE)
+length(test_only_lemma)
+
+## 1)
+# of the training and development set
+labels_only_lemma <- one_line_data_x$one_line_lemma
+it2 <- itoken(labels_only_lemma, progressbar = FALSE)
+length(labels_only_lemma)
+
+# join the list of lemmas
+doc_set_only_lemma <- c(test_only_lemma, labels_only_lemma)
+length(doc_set_only_lemma)
+
+# define common vector space
+it <- itoken(doc_set_only_lemma, progressbar = FALSE)
+
+# select small set of stop words (other words will be filtered in the next steps)
+stop_words <- c("de", "en", "la", "a", "y", "se", "por", "el", "una", "un", "los", "del", "que", "al", "las", "fue", "su", "e", "lo")
+
+# build vocabulary of terms
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_only_lemma <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_lemma)
+
+## 2)
+# tfidf with codiespD
+labels_codiesp_D_only_lemma <- one_line_codiesp_D$only_lemma
+it2 <- itoken(labels_codiesp_D_only_lemma, progressbar = FALSE)
+length(labels_codiesp_D_only_lemma)
+
+doc_set_only_lemma <- c(test_only_lemma, labels_codiesp_D_only_lemma)
+length(doc_set_only_lemma)
+
+# define common vector space
+it <- itoken(doc_set_only_lemma, progressbar = FALSE)
+
+# create vocabulary
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+
+# vectorize vocabulary
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_codiesp_D_only_lemma <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_codiesp_D_only_lemma)
+
+## 3)
+# tfidf codiesp P 
+labels_codiesp_P_only_lemma <- one_line_codiesp_P$only_lemma
+it2 <- itoken(labels_codiesp_P_only_lemma, progressbar = FALSE)
+length(labels_codiesp_P_only_lemma)
+
+doc_set_only_lemma <- c(test_only_lemma, labels_codiesp_P_only_lemma)
+length(doc_set_only_lemma)
+
+# define common vector space
+it <- itoken(doc_set_only_lemma, progressbar = FALSE)
+
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+tfidf_codiesp_P_only_lemma <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_lemma)
+
+```
+
+```{r tfidf_stem, echo=FALSE}
+
+#one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+#one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+#one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+#one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+#one_line_codiesp_D <- readRDS("raw_data/one_line_codiesp_D_codes.RDS")
+#one_line_codiesp_P <- readRDS("raw_data/one_line_codiesp_P_codes.RDS")
+
+###############
+# stem
+###############
+
+# "stemize" the stems of the test set
+test_only_stem <- one_line_docs_test$only_stem
+it1 <- itoken(test_only_stem, progressbar = FALSE)
+length(test_only_stem)
+
+## 1)
+# of the training and development set
+labels_only_stem <- one_line_data_x$one_line_stem
+it2 <- itoken(labels_only_stem, progressbar = FALSE)
+length(labels_only_stem)
+
+# join the list of stems
+doc_set_only_stem <- c(test_only_stem, labels_only_stem)
+length(doc_set_only_stem)
+
+# define common vector space
+it <- itoken(doc_set_only_stem, progressbar = FALSE)
+
+# select small set of stop words (other words will be filtered in the next steps)
+stop_words <- c("de", "en", "la", "a", "y", "se", "por", "el", "una", "un", "los", "del", "que", "al", "las", "fue", "su", "e", "lo")
+
+# build vocabulary of terms
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_only_stem <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_stem)
+
+## 2)
+# tfidf with codiespD
+labels_codiesp_D_only_stem <- one_line_codiesp_D$only_stem
+it2 <- itoken(labels_codiesp_D_only_stem, progressbar = FALSE)
+length(labels_codiesp_D_only_stem)
+
+doc_set_only_stem <- c(test_only_stem, labels_codiesp_D_only_stem)
+length(doc_set_only_stem)
+
+# define common vector space
+it <- itoken(doc_set_only_stem, progressbar = FALSE)
+
+# create vocabulary
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+
+# vectorize vocabulary
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+# build tfidf matrix
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+# compute similarity
+tfidf_codiesp_D_only_stem <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_codiesp_D_only_stem)
+
+## 3)
+# tfidf codiesp P 
+labels_codiesp_P_only_stem <- one_line_codiesp_P$only_stem
+it2 <- itoken(labels_codiesp_P_only_stem, progressbar = FALSE)
+length(labels_codiesp_P_only_stem)
+
+doc_set_only_stem <- c(test_only_stem, labels_codiesp_P_only_stem)
+length(doc_set_only_stem)
+
+# define common vector space
+it <- itoken(doc_set_only_stem, progressbar = FALSE)
+
+v <- create_vocabulary(it, stopwords = stop_words)
+
+# cancel words that appear in less than two documents
+v <- prune_vocabulary(v, doc_count_min = 2)
+#v = prune_vocabulary(v, doc_proportion_min = 0.18, doc_count_min = 2)
+v
+vectorizer <- vocab_vectorizer(v)
+
+# they will be in the same space because we use same vectorizer
+# hash_vectorizer will also work fine
+dtm1 <- create_dtm(it1, vectorizer)
+dim(dtm1)
+
+dtm2 <- create_dtm(it2, vectorizer)
+dim(dtm2)
+
+tfidf <- TfIdf$new()
+dtm1_tfidf <- fit_transform(dtm1, tfidf)
+dtm2_tfidf <- fit_transform(dtm2, tfidf)
+
+tfidf_codiesp_P_only_stem <- sim2(x = dtm1_tfidf, y = dtm2_tfidf, method = "cosine", norm = "l2")
+dim(tfidf_only_stem)
+
+```
+
+
+## Classify
+
+### Classify with tokens
+
+We classify objects by first looking at the original tokens.
+
+First, see if there is any sentence with previously classified token(s) in the document or in the ICD10 codes.
+
+```{r token}
+
+# one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+# one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+# one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+# one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+
+source("find_functions/find_labels_only_token.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 100 == 0)
+    print(i)
+
+  find_labels_only_token(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_only_token.rds")
+saveRDS(test_P, "test_output/test_P_only_token.rds")
+
+
+#print(test_D)
+#print(test_P)
+
+source("find_functions/find_labels_only_token_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 100 == 0)
+    print(i)
+
+  find_labels_only_token_codiesp(i)
+
+}
+toc()
+
+print(test_D)
+print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_codiesp_only_token.rds")
+saveRDS(test_P, "test_output/test_P_codiesp_only_token.rds")
+
+
+source("find_functions/find_labels_tfidf_only_token.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfifd_only_token(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_tfifd_only_token.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_only_token.rds")
+
+
+source("find_functions/find_labels_tfifd_only_token_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfidf_only_token_codiesp(i)
+
+}
+toc()
+
+print(test_D)
+print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_tfidf_codiesp_only_token.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_codiesp_only_token.rds")
+
+```
+
+```{r lemma}
+
+# one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+# one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+# one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+# one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+
+source("find_functions/find_labels_only_lemma.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_only_lemma(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_only_lemma.rds")
+saveRDS(test_P, "test_output/test_P_only_lemma.rds")
+
+
+#print(test_D)
+#print(test_P)
+
+source("find_functions/find_labels_only_lemma_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_only_lemma_codiesp(i)
+
+}
+toc()
+
+#print(test_D)
+#print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_codiesp_only_lemma.rds")
+saveRDS(test_P, "test_output/test_P_codiesp_only_lemma.rds")
+
+
+source("find_functions/find_labels_tfidf_only_lemma.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfifd_only_lemma(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_tfifd_only_lemma.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_only_lemma.rds")
+
+
+source("find_functions/find_labels_tfifd_only_lemma_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfidf_only_lemma_codiesp(i)
+
+}
+toc()
+
+print(test_D)
+print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_tfidf_codiesp_only_lemma.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_codiesp_only_lemma.rds")
+
+```
+
+```{r stem}
+
+# one_line_docs_train <- readRDS("raw_data/one_line_docs_train.rds")
+# one_line_docs_dev <- readRDS("raw_data/one_line_docs_dev.rds")
+# one_line_data_x <- readRDS("raw_data/one_line_data_x.rds")
+# one_line_docs_test <- readRDS("raw_data/one_line_docs_test.rds")
+
+source("find_functions/find_labels_only_stem.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_only_stem(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_only_stem.rds")
+saveRDS(test_P, "test_output/test_P_only_stem.rds")
+
+
+#print(test_D)
+#print(test_P)
+
+source("find_functions/find_labels_only_stem_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+# test
+#find_labels(1)
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_only_stem_codiesp(i)
+
+}
+toc()
+
+#print(test_D)
+#print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_codiesp_only_stem.rds")
+saveRDS(test_P, "test_output/test_P_codiesp_only_stem.rds")
+
+
+source("find_functions/find_labels_tfidf_only_stem.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfifd_only_stem(i)
+
+}
+toc()
+
+saveRDS(test_D, "test_output/test_D_tfifd_only_stem.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_only_stem.rds")
+
+
+source("find_functions/find_labels_tfifd_only_stem_codiesp.R")
+
+test_D <- tibble(case_id = character(), code = character())
+test_P <- tibble(case_id = character(), code = character())
+
+
+tic("for loop")
+for (i in 1:nrow(one_line_docs_test)) {
+
+  if (i %% 50 == 0)
+    print(i)
+
+  find_labels_tfidf_only_stem_codiesp(i)
+
+}
+toc()
+
+print(test_D)
+print(test_P)
+
+#test_D  filter E85.8
+
+saveRDS(test_D, "test_output/test_D_tfidf_codiesp_only_stem.rds")
+saveRDS(test_P, "test_output/test_P_tfidf_codiesp_only_stem.rds")
+
+```
+
+
+## Build runs
+
+At this point, we can join the previous results into runs for CLEF eHealth 2020.
+
+### Runs for "D"  Diseases and "P" Procedures
+
+```{r read_output_D}
+
+test_D_only_token <- readRDS("./test_output/test_D_only_token.rds")
+test_D_only_lemma <- readRDS("./test_output/test_D_only_lemma.rds")
+test_D_only_stem <- readRDS("./test_output/test_D_only_stem.rds")
+
+test_D_codiesp_only_token <- readRDS("./test_output/test_D_codiesp_only_token.rds")
+test_D_codiesp_only_lemma <- readRDS("./test_output/test_D_codiesp_only_lemma.rds")
+test_D_codiesp_only_stem <- readRDS("./test_output/test_D_codiesp_only_stem.rds")
+
+test_D_tfidf_only_token <- readRDS("./test_output/test_D_tfifd_only_token.rds")
+test_D_tfidf_codiesp_only_token <- readRDS("./test_output/test_D_tfidf_codiesp_only_token.rds")
+
+test_D_tfidf_only_lemma <- readRDS("./test_output/test_D_tfifd_only_lemma.rds")
+test_D_tfidf_codiesp_only_lemma <- readRDS("./test_output/test_D_tfidf_codiesp_only_lemma.rds")
+
+test_D_tfidf_only_stem <- readRDS("./test_output/test_D_tfifd_only_stem.rds")
+test_D_tfidf_codiesp_only_stem <- readRDS("./test_output/test_D_tfidf_codiesp_only_stem.rds")
+
+```
+
+```{r read_output_P}
+
+test_P_only_token <- readRDS("./test_output/test_P_only_token.rds")
+test_P_only_lemma <- readRDS("./test_output/test_P_only_lemma.rds")
+test_P_only_stem <- readRDS("./test_output/test_P_only_stem.rds")
+
+test_P_codiesp_only_token <- readRDS("./test_output/test_P_codiesp_only_token.rds")
+test_P_codiesp_only_lemma <- readRDS("./test_output/test_P_codiesp_only_lemma.rds")
+test_P_codiesp_only_stem <- readRDS("./test_output/test_P_codiesp_only_stem.rds")
+
+test_P_tfidf_only_token <- readRDS("./test_output/test_P_tfidf_only_token.rds")
+test_P_tfidf_codiesp_only_token <- readRDS("./test_output/test_P_tfidf_codiesp_only_token.rds")
+
+test_P_tfidf_only_lemma <- readRDS("./test_output/test_P_tfidf_only_lemma.rds")
+test_P_tfidf_codiesp_only_lemma <- readRDS("./test_output/test_P_tfidf_codiesp_only_lemma.rds")
+
+test_P_tfidf_only_stem <- readRDS("./test_output/test_P_tfidf_codiesp_only_stem.rds")
+test_P_tfidf_codiesp_only_stem <- readRDS("./test_output/test_P_tfidf_codiesp_only_stem.rds")
+
+```
+
+
+Before we start building the runs, we need to filter out the category E85.8 that has been (maybe) incorrectly encoded in the codiesp-D files with "0".
+
+```{r correct_codiesp, echo=FALSE}
+
+test_D_codiesp_only_token <- test_D_codiesp_only_token %>% filter(code != "E85.8")
+test_D_codiesp_only_lemma <- test_D_codiesp_only_lemma %>% filter(code != "E85.8")
+test_D_codiesp_only_stem <- test_D_codiesp_only_stem %>% filter(code != "E85.8")
+
+test_D_tfidf_codiesp_only_token <- test_D_tfidf_codiesp_only_token %>% filter(code != "E85.8")
+test_D_tfidf_codiesp_only_lemma <- test_D_tfidf_codiesp_only_lemma %>% filter(code != "E85.8")
+test_D_tfidf_codiesp_only_stem <- test_D_tfidf_codiesp_only_stem %>% filter(code != "E85.8")
+
+```
+
+### Official Runs
+
+First, use the token only
+
+```{r run_token}
+
+test_D_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_D_only_token.tsv", col_names = FALSE)
+
+###
+
+test_P_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_P_only_token.tsv", col_names = FALSE)
+
+
+```
+
+```{r run_token_lemma_stem}
+
+test_D_only_token_scaled <- test_D_only_token %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_D_only_lemma_scaled <- test_D_only_lemma %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_D_only_stem_scaled <- test_D_only_stem %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_D_only_token_lemma_stem <- test_D_only_token_scaled %>%
+  bind_rows(test_D_only_lemma_scaled) %>%
+  bind_rows(test_D_only_stem_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup()
+
+test_D_only_token_lemma_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_D_only_token_lemma_stem.tsv", col_names = FALSE)
+
+####
+
+test_P_only_token_scaled <- test_P_only_token %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_P_only_lemma_scaled <- test_P_only_lemma %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_P_only_stem_scaled <- test_P_only_stem %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  ungroup()
+
+test_P_only_token_lemma_stem <- test_P_only_token_scaled %>%
+  bind_rows(test_P_only_lemma_scaled) %>%
+  bind_rows(test_P_only_stem_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup()
+
+test_P_only_token_lemma_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_P_only_token_lemma_stem.tsv", col_names = FALSE)
+
+```
+
+```{r run_token_lemma_stem_codiesp}
+
+test_D_codiesp_only_token_scaled <- test_D_codiesp_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_codiesp_only_lemma_scaled <- test_D_codiesp_only_lemma %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_codiesp_only_stem_scaled <- test_D_codiesp_only_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_only_token_lemma_stem_codiesp <- test_D_only_token_lemma_stem %>%
+  rename(score = sum_score) %>%
+  bind_rows(test_D_codiesp_only_token) %>%
+  bind_rows(test_D_codiesp_only_lemma) %>%
+  bind_rows(test_D_codiesp_only_stem) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup()
+
+test_D_only_token_lemma_stem_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_D_only_token_lemma_stem_codiesp.tsv", col_names = FALSE)
+
+###
+
+test_P_codiesp_only_token_scaled <- test_P_codiesp_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_codiesp_only_lemma_scaled <- test_P_codiesp_only_lemma %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_codiesp_only_stem_scaled <- test_P_codiesp_only_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(count))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_only_token_lemma_stem_codiesp <- test_P_only_token_lemma_stem %>%
+  rename(score = sum_score) %>%
+  bind_rows(test_P_codiesp_only_token) %>%
+  bind_rows(test_P_codiesp_only_lemma) %>%
+  bind_rows(test_P_codiesp_only_stem) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup()
+
+
+test_P_only_token_lemma_stem_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_P_only_token_lemma_stem_codiesp.tsv", col_names = FALSE)
+
+
+```
+
+
+```{r run_tfidf_token_lemma_stem_codiesp}
+
+test_D_tfidf_only_token_scaled <- test_D_tfidf_only_token %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_D_tfidf_only_lemma_scaled <- test_D_tfidf_only_lemma %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_D_tfidf_only_stem_scaled <- test_D_tfidf_only_stem %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_D_tfidf_only_token_lemma_stem_codiesp <- test_D_only_token_scaled %>%
+  bind_rows(test_D_only_lemma_scaled) %>%
+  bind_rows(test_D_only_stem_scaled) %>%
+  bind_rows(test_D_codiesp_only_token_scaled) %>%
+  bind_rows(test_D_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_D_codiesp_only_stem_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup() %>%
+  group_by(case_id) %>%
+  top_n(100, sum_score) %>%
+  ungroup()
+
+test_D_tfidf_only_token_lemma_stem_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_D_tfidf_only_token_lemma_stem_codiesp.tsv", col_names = FALSE)
+
+####
+
+test_P_tfidf_only_token_scaled <- test_P_tfidf_only_token %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_P_tfidf_only_lemma_scaled <- test_P_tfidf_only_lemma %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_P_tfidf_only_stem_scaled <- test_P_tfidf_only_stem %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  ungroup()
+
+test_P_tfidf_only_token_lemma_stem_codiesp <- test_P_only_token_scaled %>%
+  bind_rows(test_P_only_lemma_scaled) %>%
+  bind_rows(test_P_only_stem_scaled) %>%
+  bind_rows(test_P_codiesp_only_token_scaled) %>%
+  bind_rows(test_P_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_P_codiesp_only_stem_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup() %>%
+  group_by(case_id) %>%
+  top_n(100, sum_score) %>%
+  ungroup()
+
+test_P_tfidf_only_token_lemma_stem_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_P_tfidf_only_token_lemma_stem_codiesp.tsv", col_names = FALSE)
+
+
+```
+
+```{r run_tfidf_token_lemma_stem_tfidf_codiesp}
+
+test_D_tfidf_codiesp_only_token_scaled <- test_D_tfidf_codiesp_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_tfidf_codiesp_only_lemma_scaled <- test_D_tfidf_codiesp_only_lemma %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_tfidf_codiesp_only_stem_scaled <- test_D_tfidf_codiesp_only_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_D_tfidf_only_token_lemma_stem_tfidf_codiesp <- test_D_only_token_scaled %>%
+  bind_rows(test_D_only_lemma_scaled) %>%
+  bind_rows(test_D_only_stem_scaled) %>%
+  bind_rows(test_D_codiesp_only_token_scaled) %>%
+  bind_rows(test_D_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_D_codiesp_only_stem_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_codiesp_only_token_scaled) %>%
+  bind_rows(test_D_tfidf_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_D_tfidf_codiesp_only_stem_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup() %>%
+  group_by(case_id) %>%
+  top_n(100, sum_score) %>%
+  ungroup()
+
+test_D_tfidf_only_token_lemma_stem_tfidf_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_D_tfidf_only_token_lemma_stem_tfidf_codiesp.tsv", col_names = FALSE)
+
+### 
+
+test_P_tfidf_codiesp_only_token_scaled <- test_P_tfidf_codiesp_only_token %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_tfidf_codiesp_only_lemma_scaled <- test_P_tfidf_codiesp_only_lemma %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_tfidf_codiesp_only_stem_scaled <- test_P_tfidf_codiesp_only_stem %>%
+  mutate(code = str_to_lower(code)) %>%
+  group_by(case_id) %>%
+  mutate(score = as.vector(scale(sum_tfidf))) %>%
+  mutate(score = ifelse(is.na(score), 0, score)) %>%
+  ungroup()
+
+test_P_tfidf_only_token_lemma_stem_tfidf_codiesp <- test_P_only_token_scaled %>%
+  bind_rows(test_P_only_lemma_scaled) %>%
+  bind_rows(test_P_only_stem_scaled) %>%
+  bind_rows(test_P_codiesp_only_token_scaled) %>%
+  bind_rows(test_P_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_P_codiesp_only_stem_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_codiesp_only_token_scaled) %>%
+  bind_rows(test_P_tfidf_codiesp_only_lemma_scaled) %>%
+  bind_rows(test_P_tfidf_codiesp_only_stem_scaled) %>%
+  group_by(case_id, code) %>%
+  summarize(sum_score = sum(score)) %>%
+  arrange(case_id, desc(sum_score)) %>% 
+  ungroup() %>%
+  group_by(case_id) %>%
+  top_n(100, sum_score) %>%
+  ungroup()
+
+test_P_tfidf_only_token_lemma_stem_tfidf_codiesp %>%
+  mutate(code = str_to_lower(code)) %>%
+  select(case_id, code) %>%
+  write_tsv(path = "./runs/test_P_tfidf_only_token_lemma_stem_tfidf_codiesp.tsv", col_names = FALSE)
+
+
+```
